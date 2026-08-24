@@ -1,0 +1,105 @@
+// Prisma schema for GoViral Social Publishing Backend (MySQL Compatible)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Social Accounts — one per platform per user
+// Tokens are encrypted at rest (AES-256) via tokenEncryption service
+// NEVER expose access_token / refresh_token to frontend
+// ─────────────────────────────────────────────────────────────
+model SocialAccount {
+  id                 String   @id @default(uuid())
+  userId             String   @map("user_id")
+
+  platform           String   // instagram | tiktok | youtube | linkedin
+  platformUserId     String?  @map("platform_user_id")
+  platformUsername   String?  @map("platform_username")
+  displayName        String   @default("") @map("display_name")
+  profileImageUrl    String?  @map("profile_image_url")
+
+  // Encrypted at rest — NEVER returned to frontend
+  accessTokenEnc     String   @map("access_token_enc") @db.Text
+  refreshTokenEnc    String?  @map("refresh_token_enc") @db.Text
+  tokenExpiresAt     DateTime? @map("token_expires_at")
+
+  scopes             Json?
+  metadata           Json?
+
+  status             String   @default("connected")
+  // connected | disconnected | reauthorization_required | error
+  lastError          String?  @map("last_error") @db.Text
+  connectedAt        DateTime @default(now()) @map("connected_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  publishJobs        SocialPublishJob[]
+
+  // One account per platform per user
+  @@unique([userId, platform, platformUserId])
+  @@index([userId, platform])
+  @@map("social_accounts")
+}
+
+// ─────────────────────────────────────────────────────────────
+// OAuth State — short-lived CSRF protection for OAuth flow
+// ─────────────────────────────────────────────────────────────
+model OAuthState {
+  id        String   @id @default(uuid())
+  state     String   @unique
+  userId    String   @map("user_id")
+  platform  String
+  expiresAt DateTime @map("expires_at")
+  consumed  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([state])
+  @@map("oauth_states")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Social Publish Jobs — one per platform per publish request
+// ─────────────────────────────────────────────────────────────
+model SocialPublishJob {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  videoId         String   @map("video_id")
+  socialAccountId String   @map("social_account_id")
+  platform        String
+
+  title           String?
+  caption         String?  @db.Text
+  description     String?  @db.Text
+  hashtags        Json?
+  tags            Json?
+  metadata        Json?
+
+  status          String   @default("queued")
+  // queued | processing | published | failed | retrying | cancelled
+
+  scheduledAt     DateTime? @map("scheduled_at")
+  startedAt       DateTime? @map("started_at")
+  publishedAt     DateTime? @map("published_at")
+
+  platformPostId  String?  @map("platform_post_id")
+  platformUrl     String?  @map("platform_url")
+
+  errorCode       String?  @map("error_code")
+  errorMessage    String?  @map("error_message") @db.Text
+  retryCount      Int      @default(0) @map("retry_count")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([scheduledAt])
+  @@map("social_publish_jobs")
+}
