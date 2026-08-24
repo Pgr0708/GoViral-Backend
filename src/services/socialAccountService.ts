@@ -8,7 +8,6 @@ import { PrismaClient } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { encryptToken, decryptToken } from './tokenEncryption';
 import { getAdapter } from '../adapters';
-import { OAuthTokens } from '../adapters/base';
 import { socialLog, logger } from './logger';
 
 const prisma = new PrismaClient();
@@ -66,43 +65,54 @@ export async function connectAccount(
   const accessTokenEnc  = encryptToken(tokens.accessToken);
   const refreshTokenEnc = tokens.refreshToken ? encryptToken(tokens.refreshToken) : null;
 
-  // Upsert: update existing account for this user+platform+platformUser, or create new
-  const account = await prisma.socialAccount.upsert({
+  // Find existing account for this user + platform
+  const existing = await prisma.socialAccount.findFirst({
     where: {
-      userId_platform_platformUserId: {
-        userId,
-        platform,
-        platformUserId: accountInfo.platformUserId,
-      },
-    },
-    update: {
-      accessTokenEnc,
-      refreshTokenEnc:   refreshTokenEnc ?? undefined,
-      tokenExpiresAt:    tokens.expiresAt,
-      scopes:            tokens.scopes ?? [],
-      status:            'connected',
-      lastError:         null,
-      platformUsername:  accountInfo.platformUsername,
-      displayName:       accountInfo.displayName,
-      profileImageUrl:   accountInfo.profileImageUrl,
-    },
-    create: {
       userId,
       platform,
-      platformUserId:   accountInfo.platformUserId,
-      platformUsername: accountInfo.platformUsername,
-      displayName:      accountInfo.displayName,
-      profileImageUrl:  accountInfo.profileImageUrl,
-      accessTokenEnc,
-      refreshTokenEnc:  refreshTokenEnc ?? undefined,
-      tokenExpiresAt:   tokens.expiresAt,
-      scopes:           tokens.scopes ?? [],
-      status:           'connected',
+      platformUserId: accountInfo.platformUserId,
     },
   });
 
-  socialLog.connected(userId, platform, account.id);
-  return account.id;
+  let accountId: string;
+
+  if (existing) {
+    const updated = await prisma.socialAccount.update({
+      where: { id: existing.id },
+      data: {
+        accessTokenEnc,
+        refreshTokenEnc:   refreshTokenEnc ?? undefined,
+        tokenExpiresAt:    tokens.expiresAt,
+        scopes:            tokens.scopes ?? [],
+        status:            'connected',
+        lastError:         null,
+        platformUsername:  accountInfo.platformUsername,
+        displayName:       accountInfo.displayName,
+        profileImageUrl:   accountInfo.profileImageUrl,
+      },
+    });
+    accountId = updated.id;
+  } else {
+    const created = await prisma.socialAccount.create({
+      data: {
+        userId,
+        platform,
+        platformUserId:   accountInfo.platformUserId,
+        platformUsername: accountInfo.platformUsername,
+        displayName:      accountInfo.displayName,
+        profileImageUrl:  accountInfo.profileImageUrl,
+        accessTokenEnc,
+        refreshTokenEnc:  refreshTokenEnc ?? undefined,
+        tokenExpiresAt:   tokens.expiresAt,
+        scopes:           tokens.scopes ?? [],
+        status:           'connected',
+      },
+    });
+    accountId = created.id;
+  }
+
+  socialLog.connected(userId, platform, accountId);
+  return accountId;
 }
 
 export async function disconnectAccount(userId: string, accountId: string): Promise<void> {
@@ -182,7 +192,6 @@ export async function ensureFreshToken(userId: string, accountId: string): Promi
       socialLog.tokenRefreshed(userId, account.platform, accountId);
       return newTokens.accessToken;
     } catch (e) {
-      // Refresh failed — mark as reauth required
       await prisma.socialAccount.update({
         where: { id: accountId },
         data: { status: 'reauthorization_required', lastError: String(e) },
