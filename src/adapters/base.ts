@@ -1,17 +1,17 @@
 /**
- * base.ts — SocialPlatformAdapter interface
- * All platform adapters implement this contract.
+ * base.ts — SocialPlatformAdapter abstract interface
+ * Every platform adapter implements this contract.
  */
 
 export interface OAuthTokens {
-  accessToken:   string;
+  accessToken:  string;
   refreshToken?: string;
-  expiresAt?:    Date;
-  scopes?:       string[];
+  expiresAt?:   Date;
+  scopes?:      string[];
 }
 
 export interface PlatformAccountInfo {
-  platformUserId:  string;
+  platformUserId:   string;
   platformUsername?: string;
   displayName:     string;
   profileImageUrl?: string;
@@ -19,6 +19,7 @@ export interface PlatformAccountInfo {
 
 export interface VideoPublishOptions {
   videoPath:    string;   // local file path
+  videoUrl?:    string;   // public CDN / video URL
   title?:       string;
   caption?:     string;
   description?: string;
@@ -45,27 +46,27 @@ export abstract class SocialPlatformAdapter {
   /** Generate the OAuth authorization URL + state for this platform */
   abstract getAuthorizationUrl(state: string): string;
 
-  /** Exchange the authorization code for tokens after OAuth callback */
+  /** Exchange authorization code for access + refresh tokens */
   abstract handleOAuthCallback(code: string): Promise<OAuthTokens>;
 
-  /** Refresh an expiring access token using the refresh token */
+  /** Refresh an expired access token using the stored refresh token */
   abstract refreshAccessToken(refreshToken: string): Promise<OAuthTokens>;
 
-  /** Fetch connected account info (username, display name, profile image) */
+  /** Fetch basic account info (username, display name, avatar) */
   abstract getAccountInfo(accessToken: string): Promise<PlatformAccountInfo>;
 
-  /** Validate that a token is still active */
+  /** Validate if the stored token is still active and valid */
   abstract validateConnection(accessToken: string): Promise<boolean>;
 
   /** Upload and publish a video to the platform */
   abstract uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult>;
 
-  /** Get publishing status for a post (for platforms with async publishing) */
+  /** Check processing / publish status of an uploaded video */
   abstract getPublishStatus(accessToken: string, platformPostId: string): Promise<string>;
 
-  /** Revoke the access token on the platform side */
+  /** Revoke token / disconnect account on the platform */
   abstract revokeConnection(accessToken: string): Promise<void>;
 
-  /** Validate video file meets platform requirements */
-  abstract validateVideo(videoPath: string, durationSeconds: number, fileSizeBytes: number): VideoValidation;
+  /** Validate video specs before attempting upload */
+  abstract validateVideo(path: string, durationSeconds: number, fileSizeBytes: number): VideoValidation;
 }
