@@ -1,15 +1,8 @@
 /**
  * InstagramAdapter — Meta Instagram Graph API / Direct Instagram Login
- *
- * Supports both:
- * 1. Direct Instagram Login (Instagram API with Instagram Login)
- *    Scopes: instagram_business_basic, instagram_business_content_publish
- * 2. Facebook Login for Business
- *    Scopes: instagram_basic, instagram_content_publish, pages_show_list
  */
 
 import axios from 'axios';
-import FormData from 'form-data';
 import {
   SocialPlatformAdapter, OAuthTokens, PlatformAccountInfo,
   VideoPublishOptions, PublishResult, VideoValidation
@@ -53,26 +46,29 @@ export class InstagramAdapter extends SocialPlatformAdapter {
   }
 
   async handleOAuthCallback(code: string): Promise<OAuthTokens> {
-    const form = new FormData();
-    form.append('client_id', this.clientId);
-    form.append('client_secret', this.clientSecret);
-    form.append('grant_type', 'authorization_code');
-    form.append('redirect_uri', this.redirectUri);
-    form.append('code', code);
+    const cleanCode = code.replace(/#_.*$/, '');
 
     // Step 1: Exchange short-lived token
     let accessToken: string;
     let expiresIn: number | undefined;
 
+    const params = new URLSearchParams({
+      client_id:     this.clientId,
+      client_secret: this.clientSecret,
+      grant_type:    'authorization_code',
+      redirect_uri:  this.redirectUri,
+      code:          cleanCode,
+    });
+
     try {
       const res = await axios.post<{ access_token: string; user_id?: string }>(
         IG_TOKEN_URL,
-        form,
-        { headers: form.getHeaders() }
+        params.toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
       );
       accessToken = res.data.access_token;
-    } catch {
-      // Fallback to Graph token endpoint if Facebook Login app ID was used
+    } catch (igErr) {
+      logger.warn('Direct IG token exchange failed, trying Graph endpoint...', { error: String(igErr) });
       const res = await axios.get<{ access_token: string; expires_in?: number }>(
         `${GRAPH_BASE}/oauth/access_token`,
         {
@@ -80,7 +76,7 @@ export class InstagramAdapter extends SocialPlatformAdapter {
             client_id:     this.clientId,
             client_secret: this.clientSecret,
             redirect_uri:  this.redirectUri,
-            code,
+            code:          cleanCode,
           },
         }
       );
@@ -100,8 +96,10 @@ export class InstagramAdapter extends SocialPlatformAdapter {
           },
         }
       );
-      accessToken = longLivedRes.data.access_token;
-      expiresIn   = longLivedRes.data.expires_in;
+      if (longLivedRes.data.access_token) {
+        accessToken = longLivedRes.data.access_token;
+        expiresIn   = longLivedRes.data.expires_in;
+      }
     } catch {
       logger.info('Using standard access token for Instagram');
     }
@@ -135,23 +133,22 @@ export class InstagramAdapter extends SocialPlatformAdapter {
       const res = await axios.get<{
         id: string;
         username?: string;
-        profile_picture_url?: string;
       }>('https://graph.instagram.com/me', {
         headers: { Authorization: `Bearer ${accessToken}` },
-        params:  { fields: 'id,username,profile_picture_url' },
+        params:  { fields: 'id,username' },
       });
 
       return {
         platformUserId:   res.data.id,
         platformUsername: res.data.username ? `@${res.data.username}` : undefined,
-        displayName:      res.data.username ?? 'Instagram Account',
-        profileImageUrl:  res.data.profile_picture_url,
+        displayName:      res.data.username ? `@${res.data.username}` : 'Instagram Account',
       };
-    } catch {
+    } catch (e) {
+      logger.warn('Failed to fetch Instagram /me profile, using default info', { error: String(e) });
       return {
         platformUserId:   'instagram_user',
         platformUsername: '@instagram',
-        displayName:      'Instagram Creator',
+        displayName:      'Instagram Account',
       };
     }
   }
@@ -170,7 +167,8 @@ export class InstagramAdapter extends SocialPlatformAdapter {
    * Upload video as an Instagram Reel
    */
   async uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult> {
-    const { videoUrl, caption = '', hashtags = [] } = options;
+    const videoUrl = options.videoUrl || options.videoPath;
+    const { caption = '', hashtags = [] } = options;
 
     if (!videoUrl) {
       throw new Error('Instagram requires a public HTTPS videoUrl for upload');

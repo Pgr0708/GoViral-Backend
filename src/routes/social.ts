@@ -1,15 +1,5 @@
 /**
  * social.ts — All social account + publishing routes
- *
- * GET  /api/social/:platform/connect      — generate OAuth URL
- * GET  /api/social/:platform/callback     — OAuth callback handler
- * POST /api/social/accounts/:id/disconnect
- * POST /api/social/accounts/:id/refresh
- * GET  /api/social/accounts               — list safe account data
- * GET  /api/social/accounts/:id           — single account
- * POST /api/social/publish                — create publish jobs
- * GET  /api/social/publish/jobs           — list user jobs
- * GET  /api/social/publish/jobs/:id       — job status
  */
 
 import { Router, Request, Response } from 'express';
@@ -75,10 +65,13 @@ router.get('/:platform/callback', validatePlatform, async (req: Request, res: Re
     return res.redirect(`${process.env.IOS_APP_URL}?platform=${platform}&error=missing_params`);
   }
 
+  const cleanCode = (code || '').replace(/#_.*$/, '').trim();
+  const cleanState = (state || '').replace(/#_.*$/, '').trim();
+
   try {
     // Validate CSRF state — do not trust userId from URL
-    const { userId } = await validateAndConsumeOAuthState(state, platform);
-    const accountId  = await connectAccount(userId, platform, code);
+    const { userId } = await validateAndConsumeOAuthState(cleanState, platform);
+    const accountId  = await connectAccount(userId, platform, cleanCode);
 
     // Redirect back to iOS app via deep link
     res.redirect(`${process.env.IOS_APP_URL}?platform=${platform}&status=connected&accountId=${accountId}`);
