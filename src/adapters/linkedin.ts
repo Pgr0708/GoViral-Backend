@@ -1,12 +1,10 @@
 /**
- * LinkedInAdapter — LinkedIn OAuth 2.0 + Video/Post API
+ * LinkedInAdapter — LinkedIn OAuth 2.0 (OpenID Connect) + Video/Post API
  *
- * OAuth: LinkedIn OAuth 2.0
+ * OAuth: LinkedIn OpenID Connect (Sign In with LinkedIn)
  * Publishing: LinkedIn REST API (ugcPosts + video upload)
  *
- * Scopes: r_liteprofile, r_emailaddress, w_member_social
- * Note: Video upload requires LinkedIn Partner approval.
- *       Without it, posts text-only or with external video link.
+ * Scopes: openid, profile, email, w_member_social
  */
 
 import axios from 'axios';
@@ -23,7 +21,8 @@ const API_BASE    = 'https://api.linkedin.com/v2';
 const MAX_VIDEO_SIZE_BYTES = 5_000_000_000; // 5 GB
 const MAX_DURATION_SECONDS = 600;           // 10 min
 
-const SCOPES = ['r_liteprofile', 'r_emailaddress', 'w_member_social'].join(' ');
+// Modern LinkedIn OpenID Connect + Sharing scopes
+const SCOPES = ['openid', 'profile', 'email', 'w_member_social'].join(' ');
 
 export class LinkedInAdapter extends SocialPlatformAdapter {
   platform = 'linkedin';
@@ -79,28 +78,38 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
   }
 
   async getAccountInfo(accessToken: string): Promise<PlatformAccountInfo> {
-    const res = await axios.get<{
-      id: string;
-      localizedFirstName: string;
-      localizedLastName: string;
-      profilePicture?: { 'displayImage~': { elements: Array<{ identifiers: Array<{ identifier: string }> }> } }
-    }>(`${API_BASE}/me`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      params:  { projection: '(id,localizedFirstName,localizedLastName,profilePicture(displayImage~:playableStreams))' },
-    });
+    try {
+      const res = await axios.get<{
+        sub: string;
+        name?: string;
+        given_name?: string;
+        family_name?: string;
+        picture?: string;
+      }>(`${API_BASE}/userinfo`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
 
-    const profileUrl = res.data.profilePicture?.['displayImage~']?.elements?.[0]?.identifiers?.[0]?.identifier;
+      const displayName = res.data.name || `${res.data.given_name ?? ''} ${res.data.family_name ?? ''}`.trim() || 'LinkedIn User';
 
-    return {
-      platformUserId: res.data.id,
-      displayName:    `${res.data.localizedFirstName} ${res.data.localizedLastName}`,
-      profileImageUrl: profileUrl,
-    };
+      return {
+        platformUserId:  res.data.sub,
+        displayName,
+        profileImageUrl: res.data.picture,
+      };
+    } catch {
+      const res = await axios.get<{ id: string; localizedFirstName?: string; localizedLastName?: string }>(`${API_BASE}/me`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      return {
+        platformUserId: res.data.id,
+        displayName:    `${res.data.localizedFirstName ?? ''} ${res.data.localizedLastName ?? ''}`.trim() || 'LinkedIn User',
+      };
+    }
   }
 
   async validateConnection(accessToken: string): Promise<boolean> {
     try {
-      await axios.get(`${API_BASE}/me`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      await axios.get(`${API_BASE}/userinfo`, { headers: { Authorization: `Bearer ${accessToken}` } });
       return true;
     } catch { return false; }
   }
@@ -161,7 +170,7 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
         },
       },
       visibility: {
-        'com.linkedin.ugc.MemberNetworkVisibility': options.commentary ? 'PUBLIC' : 'PUBLIC',
+        'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC',
       },
     }, { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
 
@@ -172,11 +181,11 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
   }
 
   async getPublishStatus(_accessToken: string, _platformPostId: string): Promise<string> {
-    return 'published'; // LinkedIn posts are synchronous
+    return 'published';
   }
 
   async revokeConnection(_accessToken: string): Promise<void> {
-    // LinkedIn doesn't have a token revocation endpoint; handle via developer portal
+    // LinkedIn handles revocation via user account settings
   }
 
   validateVideo(_path: string, durationSeconds: number, fileSizeBytes: number): VideoValidation {
