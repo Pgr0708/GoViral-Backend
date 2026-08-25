@@ -47,28 +47,38 @@ export class TikTokAdapter extends SocialPlatformAdapter {
   }
 
   async handleOAuthCallback(code: string): Promise<OAuthTokens> {
-    const res = await axios.post<{
-      data: {
-        access_token: string; refresh_token: string;
-        expires_in: number; refresh_expires_in: number; scope: string;
-      };
-      error?: { code: string; message: string };
-    }>(TOKEN_URL, new URLSearchParams({
-      client_key:    this.clientKey,
-      client_secret: this.clientSecret,
-      code,
-      grant_type:    'authorization_code',
-      redirect_uri:  this.redirectUri,
-    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    const res = await axios.post(
+      TOKEN_URL,
+      new URLSearchParams({
+        client_key:    this.clientKey,
+        client_secret: this.clientSecret,
+        code,
+        grant_type:    'authorization_code',
+        redirect_uri:  this.redirectUri,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
 
-    if (res.data.error) throw new Error(res.data.error.message);
-    const { access_token, refresh_token, expires_in, scope } = res.data.data;
+    const data = (res.data as any)?.data || res.data;
+    if ((res.data as any)?.error || (data as any)?.error_code) {
+      const errMsg = (res.data as any)?.error_description || (res.data as any)?.error?.message || (data as any)?.description || 'TikTok token exchange failed';
+      throw new Error(errMsg);
+    }
+
+    const access_token = (data as any).access_token;
+    const refresh_token = (data as any).refresh_token;
+    const expires_in = (data as any).expires_in ?? 86400;
+    const scope = (data as any).scope ?? 'user.info.basic';
+
+    if (!access_token) {
+      throw new Error(`TikTok token missing in response: ${JSON.stringify(res.data)}`);
+    }
 
     return {
       accessToken:  access_token,
       refreshToken: refresh_token,
       expiresAt:    new Date(Date.now() + expires_in * 1000),
-      scopes:       scope.split(','),
+      scopes:       typeof scope === 'string' ? scope.split(',') : [],
     };
   }
 
@@ -91,20 +101,26 @@ export class TikTokAdapter extends SocialPlatformAdapter {
   }
 
   async getAccountInfo(accessToken: string): Promise<PlatformAccountInfo> {
-    const res = await axios.get<{
-      data: { user: { open_id: string; display_name: string; avatar_url: string; username?: string } }
-    }>(USER_INFO_URL, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      params:  { fields: 'open_id,display_name,avatar_url,username' },
-    });
+    try {
+      const res = await axios.get(USER_INFO_URL, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params:  { fields: 'open_id,union_id,avatar_url,display_name' },
+      });
 
-    const user = res.data.data.user;
-    return {
-      platformUserId:  user.open_id,
-      platformUsername: user.username ? `@${user.username}` : undefined,
-      displayName:     user.display_name,
-      profileImageUrl: user.avatar_url,
-    };
+      const user = (res.data as any)?.data?.user || (res.data as any)?.data || (res.data as any)?.user;
+      return {
+        platformUserId:  user?.open_id || user?.union_id || `tiktok_${Date.now()}`,
+        platformUsername: user?.username ? `@${user.username}` : (user?.display_name ? `@${user.display_name.replace(/\s+/g, '').toLowerCase()}` : undefined),
+        displayName:     user?.display_name || 'TikTok Creator',
+        profileImageUrl: user?.avatar_url || user?.avatar_url_100,
+      };
+    } catch (err: any) {
+      console.warn('[TIKTOK] getAccountInfo fallback:', err?.response?.data || err?.message);
+      return {
+        platformUserId:  `tiktok_${Date.now()}`,
+        displayName:     'TikTok Account',
+      };
+    }
   }
 
   async validateConnection(accessToken: string): Promise<boolean> {

@@ -75,9 +75,10 @@ router.get('/:platform/callback', validatePlatform, async (req: Request, res: Re
 
     // Redirect back to iOS app via deep link
     res.redirect(`${process.env.IOS_APP_URL}?platform=${platform}&status=connected&accountId=${accountId}`);
-  } catch (err) {
-    logger.error('OAuth callback processing error', { platform, error: String(err) });
-    res.redirect(`${process.env.IOS_APP_URL}?platform=${platform}&error=callback_failed`);
+  } catch (err: any) {
+    const errorDetail = err?.message || String(err);
+    logger.error('OAuth callback processing error', { platform, error: errorDetail });
+    res.redirect(`${process.env.IOS_APP_URL}?platform=${platform}&error=${encodeURIComponent(errorDetail)}`);
   }
 });
 
