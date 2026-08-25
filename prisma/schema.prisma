@@ -22,7 +22,7 @@ model SocialAccount {
   platformUserId     String?  @map("platform_user_id")
   platformUsername   String?  @map("platform_username")
   displayName        String   @default("") @map("display_name")
-  profileImageUrl    String?  @map("profile_image_url")
+  profileImageUrl    String?  @map("profile_image_url") @db.Text
 
   // Encrypted at rest — NEVER returned to frontend
   accessTokenEnc     String   @map("access_token_enc") @db.Text
@@ -87,7 +87,7 @@ model SocialPublishJob {
   publishedAt     DateTime? @map("published_at")
 
   platformPostId  String?  @map("platform_post_id")
-  platformUrl     String?  @map("platform_url")
+  platformUrl     String?  @map("platform_url") @db.Text
 
   errorCode       String?  @map("error_code")
   errorMessage    String?  @map("error_message") @db.Text
