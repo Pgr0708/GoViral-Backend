@@ -65,6 +65,9 @@ export async function connectAccount(
   const accessTokenEnc  = encryptToken(tokens.accessToken);
   const refreshTokenEnc = tokens.refreshToken ? encryptToken(tokens.refreshToken) : null;
 
+  // Clean avatar URL (fallback to string if needed)
+  const safeProfileImageUrl = accountInfo.profileImageUrl || null;
+
   // Find existing account for this user + platform
   const existing = await prisma.socialAccount.findFirst({
     where: {
@@ -88,7 +91,7 @@ export async function connectAccount(
         lastError:         null,
         platformUsername:  accountInfo.platformUsername,
         displayName:       accountInfo.displayName,
-        profileImageUrl:   accountInfo.profileImageUrl,
+        profileImageUrl:   safeProfileImageUrl,
       },
     });
     accountId = updated.id;
@@ -100,7 +103,7 @@ export async function connectAccount(
         platformUserId:   accountInfo.platformUserId,
         platformUsername: accountInfo.platformUsername,
         displayName:      accountInfo.displayName,
-        profileImageUrl:  accountInfo.profileImageUrl,
+        profileImageUrl:  safeProfileImageUrl,
         accessTokenEnc,
         refreshTokenEnc:  refreshTokenEnc ?? undefined,
         tokenExpiresAt:   tokens.expiresAt,
