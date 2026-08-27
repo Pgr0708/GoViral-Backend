@@ -1,10 +1,13 @@
 /**
- * social.ts — All social account + publishing routes
+ * social.ts — All social account + publishing + upload routes
  */
 
 import { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { requireAuth, validatePlatform } from '../middleware/auth';
 import {
   createOAuthState,
@@ -25,6 +28,66 @@ const router = Router();
 // ─── Rate limiting ──────────────────────────────────────────
 const oauthLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
 const publishLimiter = rateLimit({ windowMs: 60 * 1000, max: 10 });
+
+// ─── Ensure uploads directory exists ──────────────────────────
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// ─── Multer Storage Config ─────────────────────────────────────
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const uniqueName = `goviral_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500 MB max per upload
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm'];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Unsupported video format: ${file.mimetype}`));
+    }
+  },
+});
+
+// ─────────────────────────────────────────────────────────────
+// Video Upload
+// POST /api/social/upload
+// ─────────────────────────────────────────────────────────────
+router.post('/upload', requireAuth, upload.single('video'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, code: 'NO_FILE', message: 'No video file provided in "video" field' });
+      return;
+    }
+
+    const baseUrl = process.env.BASE_URL ?? 'https://goviral.dakshyaminfotech.store';
+    const videoUrl = `${baseUrl}/uploads/${req.file.filename}`;
+
+    logger.info('Video uploaded', {
+      userId:   req.userId,
+      filename: req.file.filename,
+      size:     req.file.size,
+      url:      videoUrl,
+    });
+
+    res.json({ success: true, videoUrl, filename: req.file.filename });
+  } catch (err) {
+    logger.error('Upload error', { error: String(err) });
+    res.status(500).json({ success: false, code: 'UPLOAD_FAILED', message: String(err) });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────
 // OAuth — Connect
