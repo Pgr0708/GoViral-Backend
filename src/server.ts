@@ -56,7 +56,7 @@ app.get('/health', (_req, res) => {
 
 // ─── Serve Uploaded Videos as Public Static Files ────────────
 // TikTok / Instagram / YouTube servers download videos from this URL
-app.use('/uploads', express.static(UPLOADS_DIR, {
+app.use('/api/uploads', express.static(UPLOADS_DIR, {
   maxAge: '1d',
   setHeaders: (res) => {
     res.set('Access-Control-Allow-Origin', '*');

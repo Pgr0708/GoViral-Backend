@@ -73,7 +73,7 @@ router.post('/upload', requireAuth, upload.single('video'), async (req: Request,
     }
 
     const baseUrl = process.env.BASE_URL ?? 'https://goviral.dakshyaminfotech.store';
-    const videoUrl = `${baseUrl}/uploads/${req.file.filename}`;
+    const videoUrl = `${baseUrl}/api/uploads/${req.file.filename}`;
 
     logger.info('Video uploaded', {
       userId:   req.userId,
