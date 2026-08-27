@@ -1,9 +1,6 @@
 /**
  * LinkedInAdapter — LinkedIn OAuth 2.0 (OpenID Connect) + Video/Post API
  *
- * OAuth: LinkedIn OpenID Connect (Sign In with LinkedIn)
- * Publishing: LinkedIn REST API (ugcPosts + video upload)
- *
  * Scopes: openid, profile, email, w_member_social
  */
 
@@ -22,7 +19,6 @@ const API_BASE    = 'https://api.linkedin.com/v2';
 const MAX_VIDEO_SIZE_BYTES = 5_000_000_000; // 5 GB
 const MAX_DURATION_SECONDS = 600;           // 10 min
 
-// Modern LinkedIn OpenID Connect + Sharing scopes
 const SCOPES = ['openid', 'profile', 'email', 'w_member_social'].join(' ');
 
 export class LinkedInAdapter extends SocialPlatformAdapter {
@@ -87,7 +83,10 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
         family_name?: string;
         picture?: string;
       }>(`${API_BASE}/userinfo`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0',
+        },
       });
 
       const displayName = res.data.name || `${res.data.given_name ?? ''} ${res.data.family_name ?? ''}`.trim() || 'LinkedIn User';
@@ -99,7 +98,10 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
       };
     } catch {
       const res = await axios.get<{ id: string; localizedFirstName?: string; localizedLastName?: string }>(`${API_BASE}/me`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0',
+        },
       });
       return {
         platformUserId: res.data.id,
@@ -110,25 +112,33 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
 
   async validateConnection(accessToken: string): Promise<boolean> {
     try {
-      await axios.get(`${API_BASE}/userinfo`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      await axios.get(`${API_BASE}/userinfo`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0',
+        },
+      });
       return true;
     } catch { return false; }
   }
 
   /**
    * LinkedIn video publish flow:
-   * 1. Register upload
-   * 2. Upload video binary
-   * 3. Create ugcPost with the video asset
+   * 1. Register upload (action=registerUpload)
+   * 2. PUT video binary to uploadMechanism uploadUrl
+   * 3. Poll asset status until AVAILABLE or pause 3s
+   * 4. Create ugcPost with asset URN
    */
   async uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult> {
     const { commentary = '', caption = '', hashtags = [], videoPath, videoUrl } = options;
     const text = commentary || caption;
     const hashtagText = hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ');
-    const postText = [text, hashtagText].filter(Boolean).join('\n\n');
+    const postText = [text, hashtagText].filter(Boolean).join('\n\n') || 'Shared via GoViral AI Studio';
 
     const accountInfo = await this.getAccountInfo(accessToken);
     const authorUrn = `urn:li:person:${accountInfo.platformUserId}`;
+
+    console.log('[LINKEDIN] Registering video upload for author:', authorUrn);
 
     // Step 1: Register video upload
     const registerRes = await axios.post<{
@@ -138,19 +148,27 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
       }
     }>(`${API_BASE}/assets?action=registerUpload`, {
       registerUploadRequest: {
-        recipes:    ['urn:li:digitalmediaRecipe:feedshare-video'],
-        owner:      authorUrn,
+        recipes: ['urn:li:digitalmediaRecipe:feedshare-video'],
+        owner: authorUrn,
         serviceRelationships: [{
           relationshipType: 'OWNER',
-          identifier:       'urn:li:userGeneratedContent',
+          identifier: 'urn:li:userGeneratedContent',
         }],
       },
-    }, { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
+    }, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-Restli-Protocol-Version': '2.0.0',
+        'Content-Type': 'application/json',
+      },
+    });
 
     const uploadUrl = registerRes.data.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'].uploadUrl;
     const assetUrn  = registerRes.data.value.asset;
 
-    // Step 2: Upload binary (local file, uploads folder, or download remote arraybuffer)
+    console.log('[LINKEDIN] Upload registered. Asset URN:', assetUrn);
+
+    // Step 2: Read binary buffer
     let fileBuffer: Buffer;
     if (videoPath && fs.existsSync(videoPath)) {
       fileBuffer = fs.readFileSync(videoPath);
@@ -164,13 +182,23 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
       throw new Error(`LinkedIn uploadVideo: no valid file found for videoPath=${videoPath}`);
     }
 
+    console.log('[LINKEDIN] Uploading', fileBuffer.length, 'bytes binary to LinkedIn uploadUrl...');
     await axios.put(uploadUrl, fileBuffer, {
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/octet-stream' },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/octet-stream',
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
     });
 
-    // Step 3: Create post
+    console.log('[LINKEDIN] Binary upload complete. Waiting 3s for LinkedIn ingestion...');
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Step 3: Create UGC Post
+    console.log('[LINKEDIN] Creating ugcPost on feed...');
     const postRes = await axios.post<{ id: string }>(`${API_BASE}/ugcPosts`, {
-      author:         authorUrn,
+      author: authorUrn,
       lifecycleState: 'PUBLISHED',
       specificContent: {
         'com.linkedin.ugc.ShareContent': {
@@ -178,18 +206,27 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
           shareMediaCategory: 'VIDEO',
           media: [{
             status: 'READY',
-            media:  assetUrn,
+            media: assetUrn,
           }],
         },
       },
       visibility: {
         'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC',
       },
-    }, { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
+    }, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-Restli-Protocol-Version': '2.0.0',
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const postId = postRes.data.id;
+    console.log('[LINKEDIN] Post published successfully! Post ID:', postId);
 
     return {
-      platformPostId: postRes.data.id,
-      platformUrl:    `https://www.linkedin.com/feed/update/${postRes.data.id}/`,
+      platformPostId: postId,
+      platformUrl: `https://www.linkedin.com/feed/update/${postId}/`,
     };
   }
 
