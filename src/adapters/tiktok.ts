@@ -1,5 +1,5 @@
 /**
- * TikTokAdapter — TikTok Login Kit + Content Posting API
+ * TikTokAdapter — TikTok Login Kit + Content Posting API v2
  *
  * Scopes: user.info.basic, video.publish, video.upload
  */
@@ -12,9 +12,10 @@ import {
   VideoPublishOptions, PublishResult, VideoValidation
 } from './base';
 
-const AUTH_BASE    = 'https://www.tiktok.com/v2/auth/authorize/';
-const TOKEN_URL    = 'https://open.tiktokapis.com/v2/oauth/token/';
+const AUTH_BASE     = 'https://www.tiktok.com/v2/auth/authorize/';
+const TOKEN_URL     = 'https://open.tiktokapis.com/v2/oauth/token/';
 const USER_INFO_URL = 'https://open.tiktokapis.com/v2/user/info/';
+const CREATOR_INFO_URL = 'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
 
 const MAX_VIDEO_SIZE_BYTES = 4_000_000_000;  // 4 GB
 const MAX_DURATION_SECONDS = 600;             // 10 min
@@ -127,10 +128,41 @@ export class TikTokAdapter extends SocialPlatformAdapter {
   }
 
   /**
-   * TikTok Multi-Tier Fail-Safe Publishing:
-   * 1. Direct Publish via PULL_FROM_URL
-   * 2. Direct Publish via Local File Binary
-   * 3. Creator Inbox Draft Fallback
+   * Queries creator info to obtain creator's allowed privacy levels and posting capabilities
+   */
+  private async queryCreatorInfo(accessToken: string): Promise<{
+    allowedPrivacyLevels: string[];
+    maxDurationSec: number;
+    canDirectPost: boolean;
+  }> {
+    try {
+      const res = await axios.post(CREATOR_INFO_URL, {}, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = res.data?.data;
+      if (data) {
+        return {
+          allowedPrivacyLevels: data.privacy_level_options || ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'SELF_ONLY'],
+          maxDurationSec: data.max_video_post_duration_sec || 600,
+          canDirectPost: true,
+        };
+      }
+    } catch (err: any) {
+      console.warn('[TIKTOK] queryCreatorInfo notice:', err?.response?.data || err?.message);
+    }
+    return {
+      allowedPrivacyLevels: ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'SELF_ONLY'],
+      maxDurationSec: 600,
+      canDirectPost: true,
+    };
+  }
+
+  /**
+   * TikTok Publishing with Smart Fallbacks
    */
   async uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult> {
     const { caption = '', hashtags = [], videoPath, videoUrl, privacyStatus = 'public' } = options;
@@ -148,19 +180,23 @@ export class TikTokAdapter extends SocialPlatformAdapter {
       }
     }
 
-    const tiktokPrivacy = privacyStatus === 'private' ? 'SELF_ONLY' : 'PUBLIC_TO_EVERYONE';
+    // Query creator capabilities
+    const creatorInfo = await this.queryCreatorInfo(accessToken);
+    let chosenPrivacy = 'PUBLIC_TO_EVERYONE';
+    if (privacyStatus === 'private' || !creatorInfo.allowedPrivacyLevels.includes('PUBLIC_TO_EVERYONE')) {
+      chosenPrivacy = creatorInfo.allowedPrivacyLevels.includes('SELF_ONLY') ? 'SELF_ONLY' : creatorInfo.allowedPrivacyLevels[0] || 'SELF_ONLY';
+    }
 
-    // ── ATTEMPT 1: Direct Video Publish via PULL_FROM_URL ──
+    let lastError: any = null;
+
+    // ── METHOD 1: Direct Publish via PULL_FROM_URL ──
     if (remoteUrl) {
       try {
-        console.log('[TIKTOK] Attempting Direct Publish (PULL_FROM_URL):', remoteUrl);
-        const initRes = await axios.post<{
-          data?: { publish_id: string };
-          error?: { code: string; message: string };
-        }>('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+        console.log('[TIKTOK] Attempting Direct Publish (PULL_FROM_URL):', { remoteUrl, privacy: chosenPrivacy });
+        const initRes = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', {
           post_info: {
             title: captionText,
-            privacy_level: tiktokPrivacy,
+            privacy_level: chosenPrivacy,
             disable_duet: false,
             disable_stitch: false,
             disable_comment: false,
@@ -179,30 +215,26 @@ export class TikTokAdapter extends SocialPlatformAdapter {
         if (initRes.data?.data?.publish_id) {
           const publish_id = initRes.data.data.publish_id;
           console.log('[TIKTOK] Direct publish initiated successfully! publish_id:', publish_id);
-          return {
-            platformPostId: publish_id,
-            platformUrl: `https://www.tiktok.com/`,
-          };
+          return { platformPostId: publish_id, platformUrl: 'https://www.tiktok.com/' };
         } else if (initRes.data?.error?.code && initRes.data.error.code !== 'ok') {
-          console.warn('[TIKTOK] Direct publish error response:', initRes.data.error);
+          console.warn('[TIKTOK] Direct PULL_FROM_URL rejected by TikTok:', initRes.data.error);
+          lastError = initRes.data.error;
         }
-      } catch (directErr: any) {
-        console.warn('[TIKTOK] Direct PULL_FROM_URL failed:', directErr?.response?.data || directErr?.message);
+      } catch (err: any) {
+        lastError = err?.response?.data || err?.message;
+        console.warn('[TIKTOK] Direct PULL_FROM_URL error:', lastError);
       }
     }
 
-    // ── ATTEMPT 2: Direct Video Publish via Local File Binary ──
+    // ── METHOD 2: Direct Publish via FILE_UPLOAD Binary ──
     if (localFilePath) {
       try {
         console.log('[TIKTOK] Attempting Direct Publish (FILE_UPLOAD):', localFilePath);
         const fileSize = fs.statSync(localFilePath).size;
-        const initRes = await axios.post<{
-          data?: { publish_id: string; upload_url?: string };
-          error?: { code: string; message: string };
-        }>('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+        const initRes = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', {
           post_info: {
             title: captionText,
-            privacy_level: tiktokPrivacy,
+            privacy_level: chosenPrivacy,
             disable_duet: false,
             disable_stitch: false,
             disable_comment: false,
@@ -230,22 +262,23 @@ export class TikTokAdapter extends SocialPlatformAdapter {
               'Content-Length': fileSize,
             },
           });
-          console.log('[TIKTOK] Direct binary upload successful! publish_id:', publish_id);
+          console.log('[TIKTOK] Direct file upload successful! publish_id:', publish_id);
           return { platformPostId: publish_id, platformUrl: 'https://www.tiktok.com/' };
+        } else if (initRes.data?.error?.code && initRes.data.error.code !== 'ok') {
+          lastError = initRes.data.error;
+          console.warn('[TIKTOK] Direct FILE_UPLOAD rejected:', lastError);
         }
-      } catch (fileErr: any) {
-        console.warn('[TIKTOK] Direct file upload failed:', fileErr?.response?.data || fileErr?.message);
+      } catch (err: any) {
+        lastError = err?.response?.data || err?.message;
+        console.warn('[TIKTOK] Direct FILE_UPLOAD error:', lastError);
       }
     }
 
-    // ── ATTEMPT 3: Creator Inbox Draft Fallback (For Development / Sandbox Apps) ──
+    // ── METHOD 3: Creator Inbox Draft Upload (For Unapproved / Sandbox TikTok Apps) ──
     try {
       console.log('[TIKTOK] Attempting Creator Inbox Draft fallback...');
       if (remoteUrl) {
-        const inboxRes = await axios.post<{
-          data?: { publish_id: string };
-          error?: { code: string; message: string };
-        }>('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+        const inboxRes = await axios.post('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
           source_info: {
             source: 'PULL_FROM_URL',
             video_url: remoteUrl,
@@ -258,17 +291,14 @@ export class TikTokAdapter extends SocialPlatformAdapter {
         });
 
         if (inboxRes.data?.data?.publish_id) {
-          console.log('[TIKTOK] Inbox draft created via URL! publish_id:', inboxRes.data.data.publish_id);
+          console.log('[TIKTOK] Inbox draft created via PULL_FROM_URL! publish_id:', inboxRes.data.data.publish_id);
           return { platformPostId: inboxRes.data.data.publish_id, platformUrl: 'https://www.tiktok.com/' };
         }
       }
 
       if (localFilePath) {
         const fileSize = fs.statSync(localFilePath).size;
-        const inboxRes = await axios.post<{
-          data?: { publish_id: string; upload_url?: string };
-          error?: { code: string; message: string };
-        }>('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+        const inboxRes = await axios.post('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
           source_info: {
             source: 'FILE_UPLOAD',
             video_size: fileSize,
@@ -297,11 +327,11 @@ export class TikTokAdapter extends SocialPlatformAdapter {
         }
       }
     } catch (inboxErr: any) {
-      console.error('[TIKTOK] Inbox fallback failed:', inboxErr?.response?.data || inboxErr?.message);
-      throw new Error(`TikTok Upload Failed: ${JSON.stringify(inboxErr?.response?.data || inboxErr?.message)}`);
+      lastError = inboxErr?.response?.data || inboxErr?.message;
+      console.error('[TIKTOK] Inbox draft upload failed:', lastError);
     }
 
-    throw new Error('TikTok upload failed: neither Direct Publish nor Inbox Draft succeeded.');
+    throw new Error(`TikTok Publishing Failed: ${JSON.stringify(lastError ?? 'Unknown error')}`);
   }
 
   async getPublishStatus(accessToken: string, platformPostId: string): Promise<string> {
