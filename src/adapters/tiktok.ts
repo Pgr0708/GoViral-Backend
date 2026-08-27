@@ -135,41 +135,73 @@ export class TikTokAdapter extends SocialPlatformAdapter {
 
   /**
    * TikTok Content Posting API flow:
-   * 1. Initialize upload
-   * 2. Upload video chunks
-   * 3. Complete upload → publish
+   *
+   * If videoPath is an HTTPS URL:
+   *   Use PULL_FROM_URL source_type (TikTok fetches from URL directly)
+   *
+   * If videoPath is a local file:
+   *   Use FILE_UPLOAD source_type (upload binary chunks)
    */
   async uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult> {
-    const { caption = '', hashtags = [], videoPath } = options;
+    const { caption = '', hashtags = [], videoPath, videoUrl } = options;
     const captionText = [caption, ...hashtags.map(h => h.startsWith('#') ? h : `#${h}`)].join(' ');
-    const fileSize = fs.statSync(videoPath).size;
 
-    // Step 1: Initialize post
-    const initRes = await axios.post<{
-      data: { publish_id: string; upload_url?: string }
-    }>('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
-      post_info: { title: captionText, privacy_level: 'SELF_ONLY' },
-      source_info: {
-        source:     'FILE_UPLOAD',
-        video_size: fileSize,
-        chunk_size: fileSize,
-        total_chunk_count: 1,
-      },
-    }, { headers: { Authorization: `Bearer ${accessToken}` } });
+    // Use provided videoUrl, or check if videoPath is an HTTPS URL
+    const remoteUrl = videoUrl || (videoPath?.startsWith('http') ? videoPath : undefined);
 
-    const { publish_id, upload_url } = initRes.data.data;
+    if (remoteUrl) {
+      // ── PULL_FROM_URL mode (preferred — TikTok fetches the video itself) ──
+      console.log('[TIKTOK] Using PULL_FROM_URL mode:', remoteUrl);
 
-    // Step 2: Upload video binary
-    const videoBuffer = fs.readFileSync(videoPath);
-    await axios.put(upload_url!, videoBuffer, {
-      headers: {
-        'Content-Type':  'video/mp4',
-        'Content-Range': `bytes 0-${fileSize - 1}/${fileSize}`,
-        'Content-Length': fileSize,
-      },
-    });
+      const initRes = await axios.post<{
+        data: { publish_id: string }
+      }>('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+        post_info: {
+          title:         captionText.slice(0, 150),
+          privacy_level: 'SELF_ONLY',
+        },
+        source_info: {
+          source:    'PULL_FROM_URL',
+          video_url: remoteUrl,
+        },
+      }, { headers: { Authorization: `Bearer ${accessToken}` } });
 
-    return { platformPostId: publish_id };
+      const { publish_id } = initRes.data.data;
+      return { platformPostId: publish_id };
+
+    } else if (videoPath && fs.existsSync(videoPath)) {
+      // ── FILE_UPLOAD mode (local file on backend server) ──
+      console.log('[TIKTOK] Using FILE_UPLOAD mode:', videoPath);
+
+      const fileSize = fs.statSync(videoPath).size;
+      const initRes = await axios.post<{
+        data: { publish_id: string; upload_url?: string }
+      }>('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+        post_info: { title: captionText, privacy_level: 'SELF_ONLY' },
+        source_info: {
+          source:            'FILE_UPLOAD',
+          video_size:        fileSize,
+          chunk_size:        fileSize,
+          total_chunk_count: 1,
+        },
+      }, { headers: { Authorization: `Bearer ${accessToken}` } });
+
+      const { publish_id, upload_url } = initRes.data.data;
+
+      const videoBuffer = fs.readFileSync(videoPath);
+      await axios.put(upload_url!, videoBuffer, {
+        headers: {
+          'Content-Type':   'video/mp4',
+          'Content-Range':  `bytes 0-${fileSize - 1}/${fileSize}`,
+          'Content-Length': fileSize,
+        },
+      });
+
+      return { platformPostId: publish_id };
+
+    } else {
+      throw new Error(`TikTok uploadVideo: no valid videoPath or videoUrl provided. Got: videoPath=${videoPath}, videoUrl=${videoUrl}`);
+    }
   }
 
   async getPublishStatus(accessToken: string, platformPostId: string): Promise<string> {
@@ -180,8 +212,7 @@ export class TikTokAdapter extends SocialPlatformAdapter {
         publish_id: platformPostId,
       }, { headers: { Authorization: `Bearer ${accessToken}` } });
 
-      const { status, publicaly_available_post_id } = res.data.data;
-      // If published, return the public post ID as URL
+      const { status } = res.data.data;
       return status;
     } catch { return 'FAILED'; }
   }

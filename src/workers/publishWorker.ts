@@ -15,7 +15,7 @@ const prisma = new PrismaClient();
 publishQueue.process(async (job) => {
   const { jobId, userId, socialAccountId, platform, videoPath, metadata } = job.data;
 
-  logger.info('Worker processing job', { jobId, platform });
+  logger.info('Worker processing job', { jobId, platform, videoPath });
 
   // Mark as processing
   await prisma.socialPublishJob.update({
@@ -29,9 +29,13 @@ publishQueue.process(async (job) => {
   const accessToken = await ensureFreshToken(userId, socialAccountId);
   const adapter     = getAdapter(platform);
 
+  // Decide whether videoPath is a remote URL or a local file
+  const isRemoteUrl = typeof videoPath === 'string' && (videoPath.startsWith('http://') || videoPath.startsWith('https://'));
+
   // Call platform adapter
   const result = await adapter.uploadVideo(accessToken, {
-    videoPath,
+    videoPath: isRemoteUrl ? '' : videoPath,  // local path or empty
+    videoUrl:  isRemoteUrl ? videoPath : undefined, // HTTPS CDN URL if remote
     title:       metadata.title,
     caption:     metadata.caption,
     description: metadata.description,

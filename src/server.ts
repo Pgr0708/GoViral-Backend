@@ -8,7 +8,10 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import path from 'path';
+import fs from 'fs';
 import socialRouter from './routes/social';
+import uploadRouter from './routes/upload';
 import { logger } from './services/logger';
 
 // Boot the publish worker
@@ -17,8 +20,16 @@ import './workers/publishWorker';
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
 
+// Ensure uploads directory exists
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
 // ─── Security Middleware ─────────────────────────────────────
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow platforms to fetch /uploads/ videos
+}));
 app.use(cors({
   origin: [
     'https://api.goviral.app',
@@ -43,8 +54,20 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'goviral-backend', timestamp: new Date().toISOString() });
 });
 
+// ─── Serve Uploaded Videos as Public Static Files ────────────
+// TikTok / Instagram / YouTube servers download videos from this URL
+app.use('/uploads', express.static(UPLOADS_DIR, {
+  maxAge: '1d',
+  setHeaders: (res) => {
+    res.set('Access-Control-Allow-Origin', '*');
+  },
+}));
+
 // ─── Social Routes ───────────────────────────────────────────
 app.use('/api/social', socialRouter);
+
+// ─── Upload Route ────────────────────────────────────────────
+app.use('/api/social/upload', uploadRouter);
 
 // ─── 404 ─────────────────────────────────────────────────────
 app.use((_req, res) => {
