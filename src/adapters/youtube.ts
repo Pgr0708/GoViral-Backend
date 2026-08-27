@@ -12,6 +12,8 @@
 import { google, youtube_v3 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import fs from 'fs';
+import path from 'path';
+import axios from 'axios';
 import {
   SocialPlatformAdapter, OAuthTokens, PlatformAccountInfo,
   VideoPublishOptions, PublishResult, VideoValidation
@@ -104,9 +106,10 @@ export class YouTubeAdapter extends SocialPlatformAdapter {
       description = '',
       tags = [],
       hashtags = [],
-      privacyStatus = 'private',
+      privacyStatus = 'public',
       scheduledAt,
       videoPath,
+      videoUrl,
     } = options;
 
     const oauth2 = this.createOAuth2Client();
@@ -130,11 +133,25 @@ export class YouTubeAdapter extends SocialPlatformAdapter {
       },
     };
 
+    // Resolve media stream: local file, uploads folder, or remote URL stream
+    let mediaStream: any;
+    if (videoPath && fs.existsSync(videoPath)) {
+      mediaStream = fs.createReadStream(videoPath);
+    } else if (videoPath && fs.existsSync(path.join(process.cwd(), 'uploads', path.basename(videoPath)))) {
+      mediaStream = fs.createReadStream(path.join(process.cwd(), 'uploads', path.basename(videoPath)));
+    } else if (videoUrl || (videoPath && videoPath.startsWith('http'))) {
+      const targetUrl = videoUrl || videoPath;
+      const res = await axios.get(targetUrl, { responseType: 'stream' });
+      mediaStream = res.data;
+    } else {
+      throw new Error(`YouTube uploadVideo: no valid file found for videoPath=${videoPath}`);
+    }
+
     const res = await yt.videos.insert({
       part: ['snippet', 'status'],
       requestBody: resource,
       media: {
-        body: fs.createReadStream(videoPath),
+        body: mediaStream,
         mimeType: 'video/*',
       },
     });

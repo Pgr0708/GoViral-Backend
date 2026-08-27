@@ -9,6 +9,7 @@
 
 import axios from 'axios';
 import fs from 'fs';
+import path from 'path';
 import {
   SocialPlatformAdapter, OAuthTokens, PlatformAccountInfo,
   VideoPublishOptions, PublishResult, VideoValidation
@@ -121,7 +122,7 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
    * 3. Create ugcPost with the video asset
    */
   async uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult> {
-    const { commentary = '', caption = '', hashtags = [], videoPath } = options;
+    const { commentary = '', caption = '', hashtags = [], videoPath, videoUrl } = options;
     const text = commentary || caption;
     const hashtagText = hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ');
     const postText = [text, hashtagText].filter(Boolean).join('\n\n');
@@ -149,8 +150,20 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
     const uploadUrl = registerRes.data.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'].uploadUrl;
     const assetUrn  = registerRes.data.value.asset;
 
-    // Step 2: Upload binary
-    const fileBuffer = fs.readFileSync(videoPath);
+    // Step 2: Upload binary (local file, uploads folder, or download remote arraybuffer)
+    let fileBuffer: Buffer;
+    if (videoPath && fs.existsSync(videoPath)) {
+      fileBuffer = fs.readFileSync(videoPath);
+    } else if (videoPath && fs.existsSync(path.join(process.cwd(), 'uploads', path.basename(videoPath)))) {
+      fileBuffer = fs.readFileSync(path.join(process.cwd(), 'uploads', path.basename(videoPath)));
+    } else if (videoUrl || (videoPath && videoPath.startsWith('http'))) {
+      const targetUrl = videoUrl || videoPath;
+      const downloadRes = await axios.get(targetUrl, { responseType: 'arraybuffer' });
+      fileBuffer = Buffer.from(downloadRes.data);
+    } else {
+      throw new Error(`LinkedIn uploadVideo: no valid file found for videoPath=${videoPath}`);
+    }
+
     await axios.put(uploadUrl, fileBuffer, {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/octet-stream' },
     });

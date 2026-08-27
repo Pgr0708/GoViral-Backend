@@ -5,6 +5,8 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import path from 'path';
+import fs from 'fs';
 import { publishQueue } from '../services/publishingService';
 import { ensureFreshToken } from '../services/socialAccountService';
 import { getAdapter } from '../adapters';
@@ -13,7 +15,7 @@ import { socialLog, logger } from '../services/logger';
 const prisma = new PrismaClient();
 
 publishQueue.process(async (job) => {
-  const { jobId, userId, socialAccountId, platform, videoPath, metadata } = job.data;
+  const { jobId, userId, socialAccountId, platform, videoPath, metadata = {} } = job.data;
 
   logger.info('Worker processing job', { jobId, platform, videoPath });
 
@@ -29,13 +31,35 @@ publishQueue.process(async (job) => {
   const accessToken = await ensureFreshToken(userId, socialAccountId);
   const adapter     = getAdapter(platform);
 
-  // Decide whether videoPath is a remote URL or a local file
-  const isRemoteUrl = typeof videoPath === 'string' && (videoPath.startsWith('http://') || videoPath.startsWith('https://'));
+  // Resolve local file path and remote CDN URL
+  let resolvedLocalPath = videoPath;
+  let remoteUrl: string | undefined = undefined;
+
+  if (typeof videoPath === 'string' && (videoPath.startsWith('http://') || videoPath.startsWith('https://'))) {
+    remoteUrl = videoPath;
+    try {
+      const urlObj = new URL(videoPath);
+      const filename = path.basename(urlObj.pathname);
+      const localUploadPath = path.join(process.cwd(), 'uploads', filename);
+      if (fs.existsSync(localUploadPath)) {
+        resolvedLocalPath = localUploadPath;
+      }
+    } catch {
+      // Keep original videoPath
+    }
+  }
+
+  logger.info('Executing platform upload', {
+    jobId,
+    platform,
+    resolvedLocalPath,
+    remoteUrl,
+  });
 
   // Call platform adapter
   const result = await adapter.uploadVideo(accessToken, {
-    videoPath: isRemoteUrl ? '' : videoPath,  // local path or empty
-    videoUrl:  isRemoteUrl ? videoPath : undefined, // HTTPS CDN URL if remote
+    videoPath:   resolvedLocalPath,
+    videoUrl:    remoteUrl,
     title:       metadata.title,
     caption:     metadata.caption,
     description: metadata.description,
