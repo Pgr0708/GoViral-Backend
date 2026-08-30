@@ -133,7 +133,7 @@ export class LinkedInAdapter extends SocialPlatformAdapter {
     const { commentary = '', caption = '', hashtags = [], videoPath, videoUrl } = options;
     const text = commentary || caption;
     const hashtagText = hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ');
-    const postText = [text, hashtagText].filter(Boolean).join('\n\n') || 'Shared via GoViral AI Studio';
+    const postText = [text, hashtagText].filter(Boolean).join('\n\n');
 
     const accountInfo = await this.getAccountInfo(accessToken);
     const authorUrn = `urn:li:person:${accountInfo.platformUserId}`;

@@ -199,7 +199,7 @@ export class TikTokAdapter extends SocialPlatformAdapter {
       console.log('[TIKTOK] Initializing Direct Post via FILE_UPLOAD...', { privacy: chosenPrivacy });
       const initRes = await axios.post('https://open.tiktokapis.com/v2/post/publish/video/init/', {
         post_info: {
-          title: captionText,
+          title: captionText || '',
           privacy_level: chosenPrivacy,
           disable_duet: false,
           disable_stitch: false,
