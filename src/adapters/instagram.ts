@@ -180,17 +180,19 @@ export class InstagramAdapter extends SocialPlatformAdapter {
     ].filter(Boolean).join('\n\n');
 
     // Step 1: Create media container
+    const containerParams: Record<string, string> = {
+      media_type:   'REELS',
+      video_url:    videoUrl,
+      access_token: accessToken,
+    };
+    if (fullCaption && fullCaption.trim().length > 0) {
+      containerParams.caption = fullCaption;
+    }
+
     const containerRes = await axios.post<{ id: string }>(
       'https://graph.instagram.com/me/media',
       null,
-      {
-        params: {
-          media_type:   'REELS',
-          video_url:    videoUrl,
-          caption:      fullCaption,
-          access_token: accessToken,
-        },
-      }
+      { params: containerParams }
     );
     const containerId = containerRes.data.id;
 

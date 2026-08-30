@@ -102,7 +102,7 @@ export class YouTubeAdapter extends SocialPlatformAdapter {
 
   async uploadVideo(accessToken: string, options: VideoPublishOptions): Promise<PublishResult> {
     const {
-      title = 'GoViral Video',
+      title,
       description = '',
       tags = [],
       hashtags = [],
@@ -116,11 +116,14 @@ export class YouTubeAdapter extends SocialPlatformAdapter {
     oauth2.setCredentials({ access_token: accessToken });
     const yt = google.youtube({ version: 'v3', auth: oauth2 });
 
-    const allTags = [...tags, ...hashtags.map(h => h.replace(/^#/, ''))];
+    const allTags = [...(tags || []), ...(hashtags || []).map(h => h.replace(/^#/, ''))];
+    const resolvedTitle = (title && title.trim().length > 0)
+      ? title.trim().substring(0, 100)
+      : (videoPath ? path.basename(videoPath).replace(/\.[^/.]+$/, '').substring(0, 100) : 'Video');
 
     const resource: youtube_v3.Schema$Video = {
       snippet: {
-        title: title.substring(0, 100),
+        title: resolvedTitle,
         description: description.substring(0, 5000),
         tags: allTags,
         categoryId: '22', // People & Blogs
